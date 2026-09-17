@@ -1,0 +1,54 @@
+services:
+  db:
+    image: docker.m.daocloud.io/library/postgres:16-alpine
+    environment:
+      POSTGRES_DB: clearing
+      POSTGRES_USER: clearing
+      POSTGRES_PASSWORD: clearing123
+    ports:
+      - "54371:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clearing -d clearing"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/clearing
+      SPRING_DATASOURCE_USERNAME: clearing
+      SPRING_DATASOURCE_PASSWORD: clearing123
+      JWT_SECRET: clearing-netting-demo-secret-key-32bytes!!
+    ports:
+      - "8171:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  seed:
+    build:
+      context: ./seed
+      dockerfile: Dockerfile
+    environment:
+      BACKEND_URL: http://backend:8080
+    depends_on:
+      backend:
+        condition: service_started
+    restart: "no"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3171:80"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
