@@ -25,11 +25,16 @@ import java.util.Set;
 @Service
 public class NettingApplicationService {
 
+    /** Statuses that occupy a (settleDate, currency) pair: in-progress or successfully netted. */
+    private static final List<NettingRunStatus> OCCUPYING_STATUSES =
+            List.of(NettingRunStatus.RUNNING, NettingRunStatus.COMPLETED);
+
     private final NettingRunRepositoryPort runRepository;
     private final ObligationRepositoryPort obligationRepository;
     private final MemberRepositoryPort memberRepository;
     private final NetPositionRepositoryPort positionRepository;
     private final NettingRunStatusService statusService;
+    private final NettingExecutionGuard executionGuard;
     private final MultilateralNettingService nettingService;
 
     public NettingApplicationService(
@@ -37,12 +42,14 @@ public class NettingApplicationService {
             ObligationRepositoryPort obligationRepository,
             MemberRepositoryPort memberRepository,
             NetPositionRepositoryPort positionRepository,
-            NettingRunStatusService statusService) {
+            NettingRunStatusService statusService,
+            NettingExecutionGuard executionGuard) {
         this.runRepository = runRepository;
         this.obligationRepository = obligationRepository;
         this.memberRepository = memberRepository;
         this.positionRepository = positionRepository;
         this.statusService = statusService;
+        this.executionGuard = executionGuard;
         this.nettingService = new MultilateralNettingService();
     }
 
@@ -79,42 +86,67 @@ public class NettingApplicationService {
         }
         String ccy = currency.trim().toUpperCase();
 
-        NettingRun run = NettingRun.create(settleDate, ccy);
-        run.markRunning();
-        run = statusService.saveInNewTx(run);
-
-        try {
-            List<TradeObligation> opens = obligationRepository.findOpenBySettleDateAndCurrency(settleDate, ccy);
-            Set<String> memberIds = new HashSet<>();
-            for (TradeObligation o : opens) {
-                memberIds.add(o.getPayerMemberId());
-                memberIds.add(o.getPayeeMemberId());
-            }
-            Map<String, Member> members = new HashMap<>();
-            for (Member m : memberRepository.findByIds(memberIds)) {
-                members.put(m.getMemberId(), m);
-            }
-
-            List<NetPosition> positions = nettingService.net(run.getRunId(), ccy, opens, members);
-
-            for (TradeObligation o : opens) {
-                o.markNetted(run.getRunId());
-            }
-            obligationRepository.saveAll(opens);
-            positionRepository.saveAll(positions);
-
-            run.markCompleted();
-            run = runRepository.save(run);
-            return new NettingRunResult(run, positions, opens);
-        } catch (DomainException ex) {
-            run.markFailed(ex.getMessage());
-            statusService.saveInNewTx(run);
-            throw ex;
-        } catch (RuntimeException ex) {
-            run.markFailed(ex.getMessage() == null ? "unexpected error" : ex.getMessage());
-            statusService.saveInNewTx(run);
-            throw new DomainException("NETTING_FAILED", ex.getMessage());
+        // Anti-double-spend guard: reject concurrent or repeated executions for the
+        // same (settleDate, currency) so one batch of OPEN obligations is netted once.
+        if (!executionGuard.tryAcquire(settleDate, ccy)) {
+            throw new DomainException(
+                    "NETTING_CONFLICT",
+                    "交割日 " + settleDate + " / " + ccy + " 的轧差正在执行中，请勿重复提交");
         }
+        try {
+            runRepository.findLatestBySettleDateAndCurrencyAndStatusIn(settleDate, ccy, OCCUPYING_STATUSES)
+                    .ifPresent(occupying -> {
+                        throw new DomainException("NETTING_CONFLICT", conflictMessage(occupying));
+                    });
+
+            NettingRun run = NettingRun.create(settleDate, ccy);
+            run.markRunning();
+            run = statusService.saveInNewTx(run);
+
+            try {
+                List<TradeObligation> opens = obligationRepository.findOpenBySettleDateAndCurrency(settleDate, ccy);
+                Set<String> memberIds = new HashSet<>();
+                for (TradeObligation o : opens) {
+                    memberIds.add(o.getPayerMemberId());
+                    memberIds.add(o.getPayeeMemberId());
+                }
+                Map<String, Member> members = new HashMap<>();
+                for (Member m : memberRepository.findByIds(memberIds)) {
+                    members.put(m.getMemberId(), m);
+                }
+
+                List<NetPosition> positions = nettingService.net(run.getRunId(), ccy, opens, members);
+
+                for (TradeObligation o : opens) {
+                    o.markNetted(run.getRunId());
+                }
+                obligationRepository.saveAll(opens);
+                positionRepository.saveAll(positions);
+
+                run.markCompleted();
+                run = runRepository.save(run);
+                return new NettingRunResult(run, positions, opens);
+            } catch (DomainException ex) {
+                run.markFailed(ex.getMessage());
+                statusService.saveInNewTx(run);
+                throw ex;
+            } catch (RuntimeException ex) {
+                run.markFailed(ex.getMessage() == null ? "unexpected error" : ex.getMessage());
+                statusService.saveInNewTx(run);
+                throw new DomainException("NETTING_FAILED", ex.getMessage());
+            }
+        } finally {
+            executionGuard.release(settleDate, ccy);
+        }
+    }
+
+    private String conflictMessage(NettingRun occupying) {
+        if (occupying.getStatus() == NettingRunStatus.RUNNING) {
+            return "交割日 " + occupying.getSettleDate() + " / " + occupying.getCurrency()
+                    + " 的轧差批次正在执行中（runId=" + occupying.getRunId() + "），请勿重复提交";
+        }
+        return "交割日 " + occupying.getSettleDate() + " / " + occupying.getCurrency()
+                + " 的轧差已成功完成（runId=" + occupying.getRunId() + "），OPEN 义务已净额，禁止重复执行";
     }
 
     @Transactional

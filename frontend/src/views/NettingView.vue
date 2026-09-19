@@ -14,6 +14,16 @@
         <el-button type="primary" :disabled="!auth.isOperator" :loading="running" @click="execute">执行轧差</el-button>
         <el-button @click="loadRuns">刷新批次</el-button>
       </div>
+      <el-alert
+        v-if="conflict"
+        style="margin-top:12px"
+        type="error"
+        show-icon
+        :closable="true"
+        title="轧差冲突：本次执行被拒绝"
+        :description="conflict"
+        @close="conflict = ''"
+      />
     </div>
 
     <div v-if="result" class="card-panel" style="margin-top:16px">
@@ -70,6 +80,7 @@ const loading = ref(false)
 const result = ref(null)
 const runs = ref([])
 const memberMap = ref({})
+const conflict = ref('')
 
 function nameOf(id) {
   return memberMap.value[id] || ''
@@ -88,6 +99,7 @@ async function loadRuns() {
 
 async function execute() {
   running.value = true
+  conflict.value = ''
   try {
     const { data } = await api.post('/netting-runs', {
       settleDate: settleDate.value,
@@ -98,6 +110,12 @@ async function execute() {
     await loadRuns()
   } catch (e) {
     result.value = null
+    const payload = e.response?.data
+    if (e.response?.status === 409 || payload?.code === 'NETTING_CONFLICT') {
+      // 冲突必须醒目展示，禁止静默失败
+      conflict.value =
+        payload?.message || '该交割日+币种已存在进行中或已完成的轧差批次，本次请求被拒绝'
+    }
     await loadRuns()
   } finally {
     running.value = false

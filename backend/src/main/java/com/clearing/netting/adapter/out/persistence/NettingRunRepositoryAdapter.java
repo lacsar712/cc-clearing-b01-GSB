@@ -2,9 +2,12 @@ package com.clearing.netting.adapter.out.persistence;
 
 import com.clearing.netting.adapter.out.persistence.repo.NettingRunJpaRepository;
 import com.clearing.netting.domain.model.NettingRun;
+import com.clearing.netting.domain.model.NettingRunStatus;
 import com.clearing.netting.domain.port.out.NettingRunRepositoryPort;
 import org.springframework.stereotype.Component;
 
+import java.time.LocalDate;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Collectors;
@@ -33,5 +36,13 @@ public class NettingRunRepositoryAdapter implements NettingRunRepositoryPort {
         return repository.findAllByOrderByCreatedAtDesc().stream()
                 .map(PersistenceMapper::toDomain)
                 .collect(Collectors.toList());
+    }
+
+    @Override
+    public Optional<NettingRun> findLatestBySettleDateAndCurrencyAndStatusIn(
+            LocalDate settleDate, String currency, Collection<NettingRunStatus> statuses) {
+        return repository
+                .findFirstBySettleDateAndCurrencyAndStatusInOrderByCreatedAtDesc(settleDate, currency, statuses)
+                .map(PersistenceMapper::toDomain);
     }
 }
