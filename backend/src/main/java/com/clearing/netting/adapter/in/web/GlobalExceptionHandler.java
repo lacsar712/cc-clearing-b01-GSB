@@ -39,6 +39,7 @@ public class GlobalExceptionHandler {
             case "AUTH_FAILED", "UNAUTHORIZED" -> HttpStatus.UNAUTHORIZED;
             case "FORBIDDEN" -> HttpStatus.FORBIDDEN;
             case "MEMBER_NOT_FOUND", "RUN_NOT_FOUND" -> HttpStatus.NOT_FOUND;
+            case "NETTING_RUN_CONFLICT" -> HttpStatus.CONFLICT;
             default -> HttpStatus.BAD_REQUEST;
         };
     }

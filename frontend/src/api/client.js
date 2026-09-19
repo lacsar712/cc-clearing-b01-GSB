@@ -26,7 +26,7 @@ api.interceptors.response.use(
       if (!window.location.pathname.includes('/login')) {
         window.location.href = '/login'
       }
-    } else {
+    } else if (!error.config?.hideErrorMessage) {
       ElMessage.error(msg)
     }
     return Promise.reject(error)

@@ -4,6 +4,25 @@
     <p class="page-desc">指定交割日与币种执行单币种多边轧差，校验 Σnet = 0</p>
 
     <div class="card-panel">
+      <el-alert
+        v-if="conflictMsg"
+        type="error"
+        show-icon
+        :closable="true"
+        title="轧差冲突:该交割日/币种已被占用,本次未执行"
+        :description="conflictMsg"
+        style="margin-bottom:12px"
+        @close="conflictMsg = ''"
+      />
+      <el-alert
+        v-if="errorMsg"
+        type="warning"
+        show-icon
+        :closable="true"
+        :title="errorMsg"
+        style="margin-bottom:12px"
+        @close="errorMsg = ''"
+      />
       <div class="toolbar">
         <el-date-picker v-model="settleDate" type="date" value-format="YYYY-MM-DD" placeholder="交割日" />
         <el-select v-model="currency" style="width:120px">
@@ -11,7 +30,11 @@
           <el-option label="CNY" value="CNY" />
           <el-option label="EUR" value="EUR" />
         </el-select>
-        <el-button type="primary" :disabled="!auth.isOperator" :loading="running" @click="execute">执行轧差</el-button>
+        <el-button
+          type="primary"
+          :disabled="!auth.isOperator"
+          @click="execute"
+        >{{ running ? '执行中…(重复点击将报冲突)' : '执行轧差' }}</el-button>
         <el-button @click="loadRuns">刷新批次</el-button>
       </div>
     </div>
@@ -70,6 +93,8 @@ const loading = ref(false)
 const result = ref(null)
 const runs = ref([])
 const memberMap = ref({})
+const conflictMsg = ref('')
+const errorMsg = ref('')
 
 function nameOf(id) {
   return memberMap.value[id] || ''
@@ -88,16 +113,27 @@ async function loadRuns() {
 
 async function execute() {
   running.value = true
+  conflictMsg.value = ''
+  errorMsg.value = ''
   try {
-    const { data } = await api.post('/netting-runs', {
-      settleDate: settleDate.value,
-      currency: currency.value
-    })
+    const { data } = await api.post(
+      '/netting-runs',
+      { settleDate: settleDate.value, currency: currency.value },
+      { hideErrorMessage: true }
+    )
     result.value = data
-    ElMessage.success('轧差完成，守恒校验通过')
+    ElMessage.success('轧差完成,守恒校验通过')
     await loadRuns()
   } catch (e) {
+    // Never fail silently: surface the server message in a persistent in-page alert.
     result.value = null
+    const payload = e.response?.data
+    const serverMsg = payload?.message || e.message || '执行失败,请稍后重试'
+    if (e.response?.status === 409 || payload?.code === 'NETTING_RUN_CONFLICT') {
+      conflictMsg.value = serverMsg
+    } else {
+      errorMsg.value = serverMsg
+    }
     await loadRuns()
   } finally {
     running.value = false
